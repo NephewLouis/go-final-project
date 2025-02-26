@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"go_final_project/config"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -53,7 +55,7 @@ func TestNextDate(t *testing.T) {
 		}
 	}
 	check()
-	if !FullNextDate {
+	if !config.FullNextDate {
 		return
 	}
 	tbl = []nextDate{

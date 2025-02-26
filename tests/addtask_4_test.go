@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"go_final_project/config"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,7 +37,7 @@ func requestJSON(apipath string, values map[string]any, method string) ([]byte, 
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
-	if len(Token) > 0 {
+	if len(config.Token) > 0 {
 		jar, err := cookiejar.New(nil)
 		if err != nil {
 			return nil, err
@@ -43,7 +45,7 @@ func requestJSON(apipath string, values map[string]any, method string) ([]byte, 
 		jar.SetCookies(req.URL, []*http.Cookie{
 			{
 				Name:  "token",
-				Value: Token,
+				Value: config.Token,
 			},
 		})
 		client.Jar = jar
@@ -162,7 +164,7 @@ func TestAddTask(t *testing.T) {
 		{"today", "Шмитнес", "", ""},
 	}
 	check()
-	if FullNextDate {
+	if config.FullNextDate {
 		tbl = []task{
 			{"20240129", "Сходить в магазин", "", "w 1,3,5"},
 		}
