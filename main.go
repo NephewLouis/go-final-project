@@ -29,11 +29,11 @@ func main() {
 
 	fmt.Println("Сервер запущен на порту", port)
 
-	http.HandleFunc("/api/task/done", handlers.MarkTaskDoneHandler)
+	http.HandleFunc("/api/task/done", handlers.MarkTaskDoneHandler(database))
 
-	http.HandleFunc("/api/task", handlers.TaskHandler)
+	http.HandleFunc("/api/task", handlers.TaskHandler(database))
 
-	http.HandleFunc("/api/tasks", handlers.GetTasksHandler)
+	http.HandleFunc("/api/tasks", handlers.GetTasksHandler(database))
 
 	http.HandleFunc("/api/nextdate", handlers.NextDateHandler)
 

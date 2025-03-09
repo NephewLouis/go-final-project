@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"go_final_project/db"
 )
 
 var task struct {
@@ -23,22 +21,24 @@ var task struct {
 
 const dateFormat = "20060102"
 
-func TaskHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPut:
-		updateTaskHandler(w, r)
-	case http.MethodGet:
-		getTaskHandler(w, r)
-	case http.MethodPost:
-		createTaskHandler(w, r)
-	case http.MethodDelete:
-		deleteTaskHandler(w, r)
-	default:
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+func TaskHandler(database *sql.DB) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			updateTaskHandler(database, w, r)
+		case http.MethodGet:
+			getTaskHandler(database, w, r)
+		case http.MethodPost:
+			createTaskHandler(database, w, r)
+		case http.MethodDelete:
+			deleteTaskHandler(database, w, r)
+		default:
+			http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		}
 	}
 }
 
-func deleteTaskHandler(w http.ResponseWriter, r *http.Request) {
+func deleteTaskHandler(database *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, `{"error":"Метод не поддерживается"}`, http.StatusMethodNotAllowed)
 		return
@@ -53,31 +53,24 @@ func deleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(idParam)
 	if err != nil || id <= 0 {
 		http.Error(w, `{"error":"Указан некорректный идентификатор"}`, http.StatusBadRequest)
+		log.Println("Указан некорректный идентификатор: ", err)
 		return
 	}
 
-	database, err := db.InitDB()
+	res, err := database.Exec("DELETE FROM scheduler WHERE id=?", id)
 	if err != nil {
-		http.Error(w, `{"error":"Ошибка при подключении к базе данных"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error": "Ошибка при удалении задачи"}`, http.StatusInternalServerError)
+		log.Println("Ошибка при удалении задачи: ", err)
 		return
 	}
-	defer database.Close()
-
-	var exists bool
-	err = database.QueryRow("SELECT EXISTS(SELECT 1 FROM scheduler WHERE id = ?)", id).Scan(&exists)
+	cnt, err := res.RowsAffected()
 	if err != nil {
-		http.Error(w, `{"error":"Ошибка при проверке задачи"}`, http.StatusInternalServerError)
+		log.Println("Ошибка при получении количества удаленных строк: ", err)
+		http.Error(w, `{"error":"Ошибка базы данных"}`, http.StatusInternalServerError)
 		return
 	}
-	if !exists {
+	if cnt == 0 {
 		http.Error(w, `{"error":"Задача не найдена"}`, http.StatusNotFound)
-		return
-	}
-
-	_, err = database.Exec("DELETE FROM scheduler WHERE id = ?", id)
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при удалении задачи"}`, http.StatusInternalServerError)
-		return
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
@@ -85,78 +78,78 @@ func deleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{})
 }
 
-func MarkTaskDoneHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"Метод не поддерживается"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	idParam := r.URL.Query().Get("id")
-	if idParam == "" {
-		http.Error(w, `{"error":"Не указан идентификатор"}`, http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.Atoi(idParam)
-	if err != nil || id <= 0 {
-		http.Error(w, `{"error":"Некорректный идентификатор"}`, http.StatusBadRequest)
-		return
-	}
-
-	database, err := db.InitDB()
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при подключении к базе данных"}`, http.StatusInternalServerError)
-		return
-	}
-	defer database.Close()
-
-	query := `SELECT id, date, repeat FROM scheduler WHERE id = ?`
-	err = database.QueryRow(query, id).Scan(&task.ID, &task.Date, &task.Repeat)
-	if err == sql.ErrNoRows {
-		http.Error(w, `{"error":"Задача не найдена"}`, http.StatusNotFound)
-		return
-	} else if err != nil {
-		http.Error(w, `{"error":"Ошибка при извлечении задачи из базы данных"}`, http.StatusInternalServerError)
-		return
-	}
-
-	if task.Repeat == "" {
-		_, err = database.Exec(`DELETE FROM scheduler WHERE id = ?`, id)
-		if err != nil {
-			http.Error(w, `{"error":"Ошибка при удалении задачи"}`, http.StatusInternalServerError)
-			return
-		}
-	} else {
-		now := time.Now()
-		nextDate, err := NextDate(now, task.Date, task.Repeat)
-		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+func MarkTaskDoneHandler(database *sql.DB) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"Метод не поддерживается"}`, http.StatusMethodNotAllowed)
 			return
 		}
 
-		_, err = database.Exec(`UPDATE scheduler SET date = ? WHERE id = ?`, nextDate, id)
-		if err != nil {
-			http.Error(w, `{"error":"Ошибка при обновлении задачи"}`, http.StatusInternalServerError)
+		idParam := r.URL.Query().Get("id")
+		if idParam == "" {
+			http.Error(w, `{"error":"Не указан идентификатор"}`, http.StatusBadRequest)
 			return
 		}
-	}
 
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{}`))
+		id, err := strconv.Atoi(idParam)
+		if err != nil || id <= 0 {
+			http.Error(w, `{"error":"Некорректный идентификатор"}`, http.StatusBadRequest)
+			log.Println("Некорректный идентификатор: ", err)
+			return
+		}
+
+		query := `SELECT id, date, repeat FROM scheduler WHERE id = ?`
+		err = database.QueryRow(query, id).Scan(&task.ID, &task.Date, &task.Repeat)
+		if err == sql.ErrNoRows {
+			http.Error(w, `{"error":"Задача не найдена"}`, http.StatusNotFound)
+			log.Println("Задача не найдена: ", err)
+			return
+		} else if err != nil {
+			http.Error(w, `{"error":"Ошибка при извлечении задачи из базы данных"}`, http.StatusInternalServerError)
+			log.Println("Ошибка базы данных: ", err)
+			return
+		}
+
+		if task.Repeat == "" {
+			_, err = database.Exec(`DELETE FROM scheduler WHERE id = ?`, id)
+			if err != nil {
+				http.Error(w, `{"error":"Ошибка при удалении задачи"}`, http.StatusInternalServerError)
+				log.Println("Ошибка при удалении задачи: ", err)
+				return
+			}
+		} else {
+			now := time.Now()
+			nextDate, err := NextDate(now, task.Date, task.Repeat)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				log.Println("Ошибка при рассчете даты", err)
+				return
+			}
+
+			_, err = database.Exec(`UPDATE scheduler SET date = ? WHERE id = ?`, nextDate, id)
+			if err != nil {
+				http.Error(w, `{"error":"Ошибка при обновлении задачи"}`, http.StatusInternalServerError)
+				log.Println("Ошибка при обновлении задачи", err)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}
 }
 
-func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
+func updateTaskHandler(database *sql.DB, w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	err := decoder.Decode(&task)
 	if err != nil {
-		fmt.Printf("Ошибка декодирования JSON: %v\n", err)
 		http.Error(w, `{"error":"Неверный формат данных"}`, http.StatusBadRequest)
+		log.Println("Неверный формат данных", err)
 		return
 	}
 
 	if task.ID == "0" {
-		fmt.Println("ID не указан или равен 0")
 		http.Error(w, `{"error":"Не указан идентификатор"}`, http.StatusBadRequest)
 		return
 	}
@@ -173,6 +166,7 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		taskDate, err = time.Parse("20060102", task.Date)
 		if err != nil {
 			http.Error(w, `{"error":"Неверный формат даты"}`, http.StatusBadRequest)
+			log.Println("Неверный формат даты", err)
 			return
 		}
 	}
@@ -189,30 +183,27 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 			nextDate, err := NextDate(now, taskDateStr, task.Repeat)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				log.Println("Ошибка при рассчете даты", err)
 				return
 			}
 			taskDate, err = time.Parse("20060102", nextDate)
 			if err != nil {
 				http.Error(w, `{"error":"Ошибка при вычислении следующей даты"}`, http.StatusInternalServerError)
+				log.Println("Ошибка при рассчете даты", err)
 				return
 			}
 		}
 	}
 
-	database, err := db.InitDB()
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при подключении к базе данных"}`, http.StatusInternalServerError)
-		return
-	}
-	defer database.Close()
-
 	var existingID int
 	err = database.QueryRow("SELECT id FROM scheduler WHERE id = ?", task.ID).Scan(&existingID)
 	if err == sql.ErrNoRows {
 		http.Error(w, `{"error":"Задача не найдена"}`, http.StatusNotFound)
+		log.Println("Задача не найдена", err)
 		return
 	} else if err != nil {
 		http.Error(w, `{"error":"Ошибка при проверке задачи"}`, http.StatusInternalServerError)
+		log.Println("Ошибка при проверке задачи", err)
 		return
 	}
 
@@ -220,6 +211,7 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	_, err = database.Exec(query, taskDate.Format("20060102"), task.Title, task.Comment, task.Repeat, task.ID)
 	if err != nil {
 		http.Error(w, `{"error":"Ошибка при обновлении задачи"}`, http.StatusInternalServerError)
+		log.Println("Ошибка при обновлении задачи", err)
 		return
 	}
 
@@ -235,7 +227,7 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-func getTaskHandler(w http.ResponseWriter, r *http.Request) {
+func getTaskHandler(database *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
@@ -253,21 +245,16 @@ func getTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(idParam)
 	if err != nil || id <= 0 {
 		http.Error(w, `{"error":"Указан некорректный идентификатор"}`, http.StatusBadRequest)
+		log.Println("Указан некорректный идентификатор", err)
 		return
 	}
-
-	database, err := db.InitDB()
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при подключении к базе данных"}`, http.StatusInternalServerError)
-		return
-	}
-	defer database.Close()
 
 	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?`
 
 	err = database.QueryRow(query, id).Scan(&task.ID, &task.Date, &task.Title, &task.Comment, &task.Repeat)
 	if err == sql.ErrNoRows {
 		http.Error(w, `{"error":"Задача не найдена"}`, http.StatusNotFound)
+		log.Println("Задача не найдена", err)
 		return
 	} else if err != nil {
 		log.Println("Ошибка при выполнении SQL-запроса:", err)
@@ -280,70 +267,66 @@ func getTaskHandler(w http.ResponseWriter, r *http.Request) {
 	err = json.NewEncoder(w).Encode(task)
 	if err != nil {
 		http.Error(w, `{"error":"Ошибка при формировании ответа"}`, http.StatusInternalServerError)
+		log.Println("Ошибка при формировании ответа", err)
 	}
 }
 
-func GetTasksHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
-		return
-	}
-
-	database, err := db.InitDB()
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при подключении к базе данных"}`, http.StatusInternalServerError)
-		return
-	}
-	defer database.Close()
-
-	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE date >= ? ORDER BY date LIMIT 50`
-	now := time.Now().Format("20060102")
-	rows, err := database.Query(query, now)
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при извлечении задач из базы данных"}`, http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	var tasks []map[string]string
-	for rows.Next() {
-		var id int
-		var date, title, comment, repeat string
-		err := rows.Scan(&id, &date, &title, &comment, &repeat)
-		if err != nil {
-			http.Error(w, `{"error":"Ошибка при чтении данных задачи"}`, http.StatusInternalServerError)
+func GetTasksHandler(database *sql.DB) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 			return
 		}
 
-		task := map[string]string{
-			"id":      strconv.Itoa(id),
-			"date":    date,
-			"title":   title,
-			"comment": comment,
-			"repeat":  repeat,
+		query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE date >= ? ORDER BY date LIMIT 50`
+		now := time.Now().Format("20060102")
+		rows, err := database.Query(query, now)
+		if err != nil {
+			http.Error(w, `{"error":"Ошибка при извлечении задач из базы данных"}`, http.StatusInternalServerError)
+			log.Println("Ошибка базы данных", err)
+			return
 		}
-		tasks = append(tasks, task)
-	}
 
-	if len(tasks) == 0 {
-		tasks = []map[string]string{}
-	}
+		var tasks []map[string]string
+		for rows.Next() {
+			var id int
+			var date, title, comment, repeat string
+			err := rows.Scan(&id, &date, &title, &comment, &repeat)
+			if err != nil {
+				http.Error(w, `{"error":"Ошибка при чтении данных задачи"}`, http.StatusInternalServerError)
+				log.Println("Ошибка при чтении данных задачи", err)
+				return
+			}
 
-	response := map[string]interface{}{
-		"tasks": tasks,
-	}
+			task := map[string]string{
+				"id":      strconv.Itoa(id),
+				"date":    date,
+				"title":   title,
+				"comment": comment,
+				"repeat":  repeat,
+			}
+			tasks = append(tasks, task)
+		}
 
-	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusOK)
-	err = json.NewEncoder(w).Encode(response)
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при формировании ответа"}`, http.StatusInternalServerError)
-	}
+		if len(tasks) == 0 {
+			tasks = []map[string]string{}
+		}
 
-	defer database.Close()
+		response := map[string]interface{}{
+			"tasks": tasks,
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusOK)
+		err = json.NewEncoder(w).Encode(response)
+		if err != nil {
+			http.Error(w, `{"error":"Ошибка при формировании ответа"}`, http.StatusInternalServerError)
+			log.Println("Ошибка при формировании ответа", err)
+		}
+	}
 }
 
-func createTaskHandler(w http.ResponseWriter, r *http.Request) {
+func createTaskHandler(database *sql.DB, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
 		return
@@ -359,6 +342,7 @@ func createTaskHandler(w http.ResponseWriter, r *http.Request) {
 	err := decoder.Decode(&newTask)
 	if err != nil {
 		http.Error(w, `{"error":"Неверный формат данных"}`, http.StatusBadRequest)
+		log.Println("Неверный формат данных", err)
 		return
 	}
 
@@ -374,6 +358,7 @@ func createTaskHandler(w http.ResponseWriter, r *http.Request) {
 		taskDate, err = time.Parse(dateFormat, newTask.Date)
 		if err != nil {
 			http.Error(w, `{"error":"Неверный формат даты"}`, http.StatusBadRequest)
+			log.Println("Неверный формат даты", err)
 			return
 		}
 	}
@@ -388,34 +373,31 @@ func createTaskHandler(w http.ResponseWriter, r *http.Request) {
 			nextDate, err := NextDate(now, taskDate.Format(dateFormat), newTask.Repeat)
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+				log.Println("Ошибка при рассчете даты", err)
 				return
 			}
 			taskDate, err = time.Parse(dateFormat, nextDate)
 			if err != nil {
 				http.Error(w, `{"error":"Ошибка при вычислении следующей даты"}`, http.StatusInternalServerError)
+				log.Println("Ошибка при рассчете даты", err)
 				return
 			}
 		}
 	} else if taskDate.Format(dateFormat) == now.Format(dateFormat) {
 	}
 
-	database, err := db.InitDB()
-	if err != nil {
-		http.Error(w, `{"error":"Ошибка при подключении к базе данных"}`, http.StatusInternalServerError)
-		return
-	}
-	defer database.Close()
-
 	query := `INSERT INTO scheduler (date, title, comment, repeat) VALUES (?, ?, ?, ?)`
 	res, err := database.Exec(query, taskDate.Format(dateFormat), newTask.Title, newTask.Comment, newTask.Repeat)
 	if err != nil {
 		http.Error(w, `{"error":"Ошибка при добавлении задачи в базу данных"}`, http.StatusInternalServerError)
+		log.Println("Ошибка базы данных", err)
 		return
 	}
 
 	id, err := res.LastInsertId()
 	if err != nil {
 		http.Error(w, `{"error":"Не удалось получить id задачи"}`, http.StatusInternalServerError)
+		log.Println("Не удалось получить id задачи", err)
 		return
 	}
 
@@ -444,12 +426,14 @@ func NextDateHandler(w http.ResponseWriter, r *http.Request) {
 	now, err := time.Parse("20060102", nowStr)
 	if err != nil {
 		http.Error(w, "Неверный формат даты now", http.StatusBadRequest)
+		log.Println("Неверный формат даты now", err)
 		return
 	}
 
 	nextDate, err := NextDate(now, dateStr, repeat)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Ошибка при вычислении следующей даты: %v", err), http.StatusBadRequest)
+		log.Println("Ошибка при рассчете даты", err)
 		return
 	}
 
@@ -463,11 +447,13 @@ func NextDate(now time.Time, date string, repeat string) (string, error) {
 
 	taskDate, err := time.Parse(dateFormat, date)
 	if err != nil {
+		log.Println("Неверный формат даты", err)
 		return "", fmt.Errorf("неверный формат даты")
 	}
 
 	parts := strings.Fields(repeat)
 	if len(parts) == 0 {
+		log.Println("Пустое правило повторения", err)
 		return "", fmt.Errorf("пустое правило повторения")
 	}
 
@@ -478,6 +464,7 @@ func NextDate(now time.Time, date string, repeat string) (string, error) {
 		}
 		days, err := strconv.Atoi(parts[1])
 		if err != nil || days <= 0 || days > 400 {
+			log.Println("Неверное соблюдение правил", err)
 			return "", fmt.Errorf("неверное количество дней в repeat")
 		}
 

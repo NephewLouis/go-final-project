@@ -32,7 +32,7 @@ func InitDB() (*sql.DB, error) {
 
 	if install {
 		if err := createTables(db); err != nil {
-			return nil, err
+			log.Fatal("Ошибка при создании базы данных: ", err)
 		}
 	}
 
@@ -54,13 +54,13 @@ func createTables(db *sql.DB) error {
 
 	_, err := db.Exec(sqlCreateTable)
 	if err != nil {
-		return fmt.Errorf("ошибка при создании таблицы: %v", err)
+		return fmt.Errorf("ошибка при создании таблицы: %w", err)
 	}
 	fmt.Println("Таблица scheduler успешно создана")
 
 	_, err = db.Exec(sqlCreateIndex)
 	if err != nil {
-		return fmt.Errorf("ошибка при создании индекса: %v", err)
+		return fmt.Errorf("ошибка при создании индекса: %w", err)
 	}
 	fmt.Println("Индекс по столбцу date успешно создан")
 
